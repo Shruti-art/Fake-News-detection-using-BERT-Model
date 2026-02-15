@@ -21,7 +21,7 @@ VOCAB_SIZE = 5000
 EMBED_DIM = 40
 HIDDEN_DIM = 100
 BATCH_SIZE = 64
-EPOCHS = 3
+EPOCHS = 100
 MODEL_PATH = "fake_news_model.pth"
 TOKENIZER_PATH = "tokenizer.pkl"
 
