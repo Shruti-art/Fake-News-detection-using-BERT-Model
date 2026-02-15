@@ -1,204 +1,205 @@
-import streamlit as st
-st.set_option('deprecation.showPyplotGlobalUse', False)
 import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-from wordcloud import WordCloud
 from sklearn.utils import shuffle
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense, Dropout, LSTM, Embedding, Bidirectional
 import pickle
-import os
 
-# Function to load data
-@st.cache_data
-def load_data():
-    true_df = pd.read_csv('true.csv')
-    fake_df = pd.read_csv('fake.csv')
-    true_df['true'] = 1
-    fake_df['true'] = 0
-    return true_df, fake_df
-
-# Global variable for maximum length of sequences
+# -----------------------------
+# CONFIG
+# -----------------------------
 MAX_LEN = 20
+VOCAB_SIZE = 5000
+EMBED_DIM = 40
+HIDDEN_DIM = 100
+BATCH_SIZE = 64
+EPOCHS = 3
+MODEL_PATH = "fake_news_model.pth"
+TOKENIZER_PATH = "tokenizer.pkl"
 
-# Function to preprocess data
-def preprocess_data(true_df, fake_df):
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+def load_data():
+    true_df = pd.read_csv("true.csv")
+    fake_df = pd.read_csv("fake.csv")
+
+    true_df["label"] = 1
+    fake_df["label"] = 0
+
     df = pd.concat([true_df, fake_df])
     df = shuffle(df).reset_index(drop=True)
 
-    tokenizer = Tokenizer(num_words=5000)
-    tokenizer.fit_on_texts(df['title'])
+    return df
 
-    sequences = tokenizer.texts_to_sequences(df['title'])
-    padded_sequences = pad_sequences(sequences, maxlen=MAX_LEN, padding='post', truncating='post')
+# -----------------------------
+# PREPROCESS
+# -----------------------------
+def preprocess(df):
+    tokenizer = Tokenizer(num_words=VOCAB_SIZE)
+    tokenizer.fit_on_texts(df["title"])
 
-    train_size = int(len(df) * 0.8)
-    val_size = int(train_size * 0.8)
-    train_sequences = padded_sequences[:val_size]
-    val_sequences = padded_sequences[val_size:train_size]
-    test_sequences = padded_sequences[train_size:]
+    sequences = tokenizer.texts_to_sequences(df["title"])
+    padded = pad_sequences(
+        sequences,
+        maxlen=MAX_LEN,
+        padding="post",
+        truncating="post"
+    )
 
-    y_train = df['true'][:val_size]
-    y_val = df['true'][val_size:train_size]
-    y_test = df['true'][train_size:]
+    X_train, X_test, y_train, y_test = train_test_split(
+        padded,
+        df["label"].values,
+        test_size=0.2,
+        random_state=42
+    )
 
-    return train_sequences, y_train, val_sequences, y_val, test_sequences, y_test, tokenizer
-
-# Function to build the model
-def build_model():
-    model = Sequential()
-    model.add(Embedding(input_dim=5000, output_dim=40))
-    model.add(Dropout(0.3))
-    model.add(Bidirectional(LSTM(100)))
-    model.add(Dropout(0.3))
-    model.add(Dense(1, activation='sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-    return model
-
-# Load data
-true_df, fake_df = load_data()
-
-# Sidebar for navigation
-st.sidebar.title("Fake News Detection")
-option = st.sidebar.selectbox("Choose an option", ["EDA", "Model Training", "Prediction", "News Detection"])
-
-# EDA
-if option == "EDA":
-    st.title("Exploratory Data Analysis")
-
-    st.subheader("True News Subject Distribution")
-    fig_true = plt.figure()
-    sns.countplot(y="subject", palette="coolwarm", data=true_df).set_title('True News Subject Distribution')
-    st.pyplot(fig_true)
-
-    st.subheader("Fake News Subject Distribution")
-    fig_fake = plt.figure()
-    sns.countplot(y="subject", palette="coolwarm", data=fake_df).set_title('Fake News Subject Distribution')
-    st.pyplot(fig_fake)
-
-    st.subheader("Word Cloud for True News Titles")
-    real_all_words = ' '.join(true_df.title)
-    wordcloud_real = WordCloud(background_color='white', width=800, height=500, max_font_size=180, collocations=False).generate(real_all_words)
-    fig_wordcloud_true = plt.figure(figsize=(10, 7))
-    plt.imshow(wordcloud_real, interpolation='bilinear')
-    plt.axis("off")
-    st.pyplot(fig_wordcloud_true)
-
-    st.subheader("Word Cloud for Fake News Titles")
-    fake_all_words = ' '.join(fake_df.title)
-    wordcloud_fake = WordCloud(background_color='white', width=800, height=500, max_font_size=180, collocations=False).generate(fake_all_words)
-    fig_wordcloud_fake = plt.figure(figsize=(10, 7))
-    plt.imshow(wordcloud_fake, interpolation='bilinear')
-    plt.axis("off")
-    st.pyplot(fig_wordcloud_fake)
-
-# Model Training
-elif option == "Model Training":
-    st.title("Model Training")
-
-    # Preprocess data
-    train_sequences, y_train, val_sequences, y_val, test_sequences, y_test, tokenizer = preprocess_data(true_df, fake_df)
-
-    # Save the tokenizer for later use
-    with open('tokenizer.pkl', 'wb') as f:
+    # Save tokenizer
+    with open(TOKENIZER_PATH, "wb") as f:
         pickle.dump(tokenizer, f)
 
-    # Build model
-    model = build_model()
-    model.summary(print_fn=lambda x: st.text(x))
+    return X_train, X_test, y_train, y_test
 
-    # Train model
-    epochs = st.slider("Number of epochs", min_value=1, max_value=10, value=3)
-    if st.button("Train Model"):
-        history = model.fit(train_sequences, y_train, batch_size=64, validation_data=(val_sequences, y_val), epochs=epochs)
-        st.success("Model trained successfully")
 
-        # Save the model in Keras format
-        model.save('fake_news_model.keras')
+# -----------------------------
+# DATASET
+# -----------------------------
+class NewsDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.tensor(X, dtype=torch.long)
+        self.y = torch.tensor(y, dtype=torch.float32)
 
-        # Plot training history
-        st.subheader("Training and Validation Loss")
-        fig_loss, ax_loss = plt.subplots()
-        ax_loss.plot(history.history['loss'], label='Training Loss')
-        ax_loss.plot(history.history['val_loss'], label='Validation Loss')
-        ax_loss.legend()
-        st.pyplot(fig_loss)
+    def __len__(self):
+        return len(self.X)
 
-        st.subheader("Training and Validation Accuracy")
-        fig_accuracy, ax_accuracy = plt.subplots()
-        ax_accuracy.plot(history.history['accuracy'], label='Training Accuracy')
-        ax_accuracy.plot(history.history['val_accuracy'], label='Validation Accuracy')
-        ax_accuracy.legend()
-        st.pyplot(fig_accuracy)
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
-# Prediction
-elif option == "Prediction":
-    st.title("Model Prediction")
 
-    # Preprocess data
-    train_sequences, y_train, val_sequences, y_val, test_sequences, y_test, tokenizer = preprocess_data(true_df, fake_df)
+# -----------------------------
+# MODEL
+# -----------------------------
+class FakeNewsModel(nn.Module):
+    def __init__(self):
+        super(FakeNewsModel, self).__init__()
 
-    # Build and load trained model
-    model = build_model()
-    if st.button("Load Trained Model"):
-        if os.path.exists('fake_news_model.keras'):
-            model = load_model('fake_news_model.keras')
-            st.success("Model loaded successfully")
-        else:
-            st.error("Model file not found. Please train the model first.")
+        self.embedding = nn.Embedding(VOCAB_SIZE, EMBED_DIM)
 
-    # Make predictions
-    if st.button("Predict"):
-        if os.path.exists('fake_news_model.keras'):
-            predictions = (model.predict(test_sequences) > 0.5).astype("int32")
-            accuracy = accuracy_score(y_test, predictions)
-            st.write("Model Accuracy:", accuracy)
+        self.lstm = nn.LSTM(
+            EMBED_DIM,
+            HIDDEN_DIM,
+            batch_first=True,
+            bidirectional=True
+        )
 
-            # Confusion matrix
-            cm = confusion_matrix(y_test, predictions)
-            st.subheader("Confusion Matrix")
-            sns.heatmap(cm, annot=True, fmt='d')
-            st.pyplot()
+        self.dropout = nn.Dropout(0.3)
+        self.fc = nn.Linear(HIDDEN_DIM * 2, 1)
+        self.sigmoid = nn.Sigmoid()
 
-            # Classification report
-            st.subheader("Classification Report")
-            report = classification_report(y_test, predictions, output_dict=True)
-            st.write(report)
-        else:
-            st.error("Model file not found. Please train the model first.")
+    def forward(self, x):
+        x = self.embedding(x)
+        lstm_out, _ = self.lstm(x)
 
-# News Detection
-elif option == "News Detection":
-    st.title("Detect Fake News")
+        # Last time step
+        out = lstm_out[:, -1, :]
+        out = self.dropout(out)
+        out = self.fc(out)
+        out = self.sigmoid(out)
 
-    user_input = st.text_area("Enter the news title:")
-    if st.button("Detect"):
-        if user_input:
-            # Load the tokenizer
-            if os.path.exists('tokenizer.pkl'):
-                with open('tokenizer.pkl', 'rb') as f:
-                    tokenizer = pickle.load(f)
+        return out.squeeze()
 
-                # Preprocess user input
-                sequence = tokenizer.texts_to_sequences([user_input])
-                padded_sequence = pad_sequences(sequence, maxlen=MAX_LEN, padding='post', truncating='post')
 
-                # Load and predict
-                if os.path.exists('fake_news_model.keras'):
-                    model = load_model('fake_news_model.keras')
-                    prediction = model.predict(padded_sequence)
-                    if prediction > 0.5:
-                        st.write("The news is True")
-                    else:
-                        st.write("The news is Fake")
-                else:
-                    st.error("Model file not found. Please train the model first.")
-            else:
-                st.error("Tokenizer file not found. Please train the model first.")
-        else:
-            st.warning("Please enter a news title")
+# -----------------------------
+# TRAIN FUNCTION
+# -----------------------------
+def train_model(model, train_loader):
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    model.train()
+
+    for epoch in range(EPOCHS):
+        total_loss = 0
+
+        for X_batch, y_batch in train_loader:
+            X_batch = X_batch.to(device)
+            y_batch = y_batch.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(X_batch)
+
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        print(f"Epoch {epoch+1}/{EPOCHS} - Loss: {total_loss/len(train_loader):.4f}")
+
+
+# -----------------------------
+# EVALUATE
+# -----------------------------
+def evaluate(model, test_loader):
+    model.eval()
+
+    predictions = []
+    true_labels = []
+
+    with torch.no_grad():
+        for X_batch, y_batch in test_loader:
+            X_batch = X_batch.to(device)
+
+            outputs = model(X_batch)
+            preds = (outputs > 0.5).float()
+
+            predictions.extend(preds.cpu().numpy())
+            true_labels.extend(y_batch.numpy())
+
+    acc = accuracy_score(true_labels, predictions)
+    print("\nTest Accuracy:", acc)
+    print("\nConfusion Matrix:\n", confusion_matrix(true_labels, predictions))
+    print("\nClassification Report:\n", classification_report(true_labels, predictions))
+
+
+# -----------------------------
+# MAIN
+# -----------------------------
+if __name__ == "__main__":
+
+    print("Loading data...")
+    df = load_data()
+
+    print("Preprocessing...")
+    X_train, X_test, y_train, y_test = preprocess(df)
+
+    train_dataset = NewsDataset(X_train, y_train)
+    test_dataset = NewsDataset(X_test, y_test)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+
+    print("Building model...")
+    model = FakeNewsModel().to(device)
+
+    print("Training...")
+    train_model(model, train_loader)
+
+    print("Evaluating...")
+    evaluate(model, test_loader)
+
+    # Save model
+    torch.save(model.state_dict(), MODEL_PATH)
+    print(f"\nModel saved as {MODEL_PATH}")
+
